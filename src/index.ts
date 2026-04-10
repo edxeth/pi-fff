@@ -191,6 +191,8 @@ class FffEditor extends CustomEditor {
 
 export default function fffExtension(pi: ExtensionAPI) {
 	let finder: FileFinder | null = null;
+	let finderCwd: string | null = null;
+	let activeCwd = process.cwd();
 	const cursorStore = new CursorStore();
 
 	try {
@@ -233,7 +235,12 @@ export default function fffExtension(pi: ExtensionAPI) {
 	}
 
 	async function ensureFinder(cwd: string): Promise<FileFinder> {
-		if (finder && !finder.isDestroyed) return finder;
+		if (finder && !finder.isDestroyed && finderCwd === cwd) return finder;
+		if (finder && !finder.isDestroyed && finderCwd !== cwd) {
+			finder.destroy();
+			finder = null;
+			finderCwd = null;
+		}
 
 		const result = FileFinder.create({
 			basePath: cwd,
@@ -247,6 +254,7 @@ export default function fffExtension(pi: ExtensionAPI) {
 		}
 
 		finder = result.value;
+		finderCwd = cwd;
 		const scanResult = await finder.waitForScan(15000);
 		if (scanResult.ok && !scanResult.value) {
 			// timed out but finder is still usable with partial index
@@ -259,12 +267,13 @@ export default function fffExtension(pi: ExtensionAPI) {
 		if (finder && !finder.isDestroyed) {
 			finder.destroy();
 			finder = null;
+			finderCwd = null;
 		}
 	}
 
 	async function getMentionItems(query: string, quotedPrefix: boolean, signal: AbortSignal): Promise<AutocompleteItem[]> {
 		if (signal.aborted) return [];
-		const f = await ensureFinder(process.cwd());
+		const f = await ensureFinder(activeCwd);
 		if (signal.aborted) return [];
 
 		const searchResult = f.fileSearch(query, { pageSize: MENTION_MAX_RESULTS });
@@ -300,7 +309,8 @@ export default function fffExtension(pi: ExtensionAPI) {
 
 	pi.on("session_start", async (_event, ctx) => {
 		try {
-			await ensureFinder(ctx.cwd);
+			activeCwd = ctx.cwd;
+			await ensureFinder(activeCwd);
 			applyEditorMode(ctx);
 		} catch (e: unknown) {
 			const msg = e instanceof Error ? e.message : String(e);
@@ -354,7 +364,7 @@ export default function fffExtension(pi: ExtensionAPI) {
 		async execute(_toolCallId, params, signal) {
 			if (signal?.aborted) throw new Error("Operation aborted");
 
-			const f = await ensureFinder(process.cwd());
+			const f = await ensureFinder(activeCwd);
 			const effectiveLimit = Math.max(1, params.limit ?? DEFAULT_GREP_LIMIT);
 
 			let query = params.pattern;
@@ -490,7 +500,7 @@ export default function fffExtension(pi: ExtensionAPI) {
 		async execute(_toolCallId, params, signal) {
 			if (signal?.aborted) throw new Error("Operation aborted");
 
-			const f = await ensureFinder(process.cwd());
+			const f = await ensureFinder(activeCwd);
 			const effectiveLimit = Math.max(1, params.limit ?? DEFAULT_FIND_LIMIT);
 
 			let query = params.pattern;
@@ -623,7 +633,7 @@ export default function fffExtension(pi: ExtensionAPI) {
 				throw new Error("patterns array must have at least 1 element");
 			}
 
-			const f = await ensureFinder(process.cwd());
+			const f = await ensureFinder(activeCwd);
 			const effectiveLimit = Math.max(1, params.limit ?? DEFAULT_GREP_LIMIT);
 			const prevCursor = params.cursor ? cursorStore.get(params.cursor) : undefined;
 
