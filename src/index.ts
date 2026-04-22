@@ -15,8 +15,7 @@ import {
 } from "@mariozechner/pi-coding-agent";
 import { Text, type AutocompleteItem, type AutocompleteProvider, type AutocompleteSuggestions } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
-import { FileFinder } from "@ff-labs/fff-node";
-import type { GrepCursor, GrepMode, GrepResult, SearchResult } from "@ff-labs/fff-node";
+import type { FileFinder as FffFileFinder, GrepCursor, GrepMode, GrepResult, SearchResult } from "@ff-labs/fff-node";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 
@@ -35,6 +34,18 @@ const GREP_MAX_LINE_LENGTH = 500;
 const MENTION_MAX_RESULTS = 20;
 
 type FffMode = "both" | "tools-only";
+type FffFileFinderClass = typeof import("@ff-labs/fff-node").FileFinder;
+
+let fileFinderClassPromise: Promise<FffFileFinderClass> | null = null;
+
+async function getFileFinderClass(): Promise<FffFileFinderClass> {
+	if (!fileFinderClassPromise) {
+		fileFinderClassPromise = (process.versions.bun
+			? import("@ff-labs/fff-bun")
+			: import("@ff-labs/fff-node")).then((mod) => mod.FileFinder as FffFileFinderClass);
+	}
+	return fileFinderClassPromise;
+}
 
 // ---------------------------------------------------------------------------
 // Cursor store — maps opaque IDs to GrepCursor values across tool calls
@@ -190,8 +201,10 @@ class FffEditor extends CustomEditor {
 // ---------------------------------------------------------------------------
 
 export default function fffExtension(pi: ExtensionAPI) {
-	let finder: FileFinder | null = null;
+	let finder: FffFileFinder | null = null;
 	let finderCwd: string | null = null;
+	let finderInit: Promise<FffFileFinder> | null = null;
+	let finderInitCwd: string | null = null;
 	let activeCwd = process.cwd();
 	const cursorStore = new CursorStore();
 
@@ -234,41 +247,66 @@ export default function fffExtension(pi: ExtensionAPI) {
 		return readConfigMode();
 	}
 
-	async function ensureFinder(cwd: string): Promise<FileFinder> {
+	async function ensureFinder(cwd: string): Promise<FffFileFinder> {
 		if (finder && !finder.isDestroyed && finderCwd === cwd) return finder;
+		if (finderInit) {
+			if (finderInitCwd === cwd) return finderInit;
+			try {
+				await finderInit;
+			} catch {
+				// ignore failed initialization and retry for the requested cwd
+			}
+			return ensureFinder(cwd);
+		}
 		if (finder && !finder.isDestroyed && finderCwd !== cwd) {
 			finder.destroy();
 			finder = null;
 			finderCwd = null;
 		}
 
-		const result = FileFinder.create({
-			basePath: cwd,
-			frecencyDbPath: FRECENCY_DB_PATH,
-			historyDbPath: HISTORY_DB_PATH,
-			aiMode: true,
-		});
+		finderInitCwd = cwd;
+		const initPromise = (async () => {
+			const FileFinder = await getFileFinderClass();
+			const result = FileFinder.create({
+				basePath: cwd,
+				frecencyDbPath: FRECENCY_DB_PATH,
+				historyDbPath: HISTORY_DB_PATH,
+				aiMode: true,
+			});
 
-		if (!result.ok) {
-			throw new Error(`Failed to create FFF file finder: ${result.error}`);
+			if (!result.ok) {
+				throw new Error(`Failed to create FFF file finder: ${result.error}`);
+			}
+
+			finder = result.value;
+			finderCwd = cwd;
+			const scanResult = await finder.waitForScan(15000);
+			if (scanResult.ok && !scanResult.value) {
+				// timed out but finder is still usable with partial index
+			}
+
+			return finder;
+		})();
+		finderInit = initPromise;
+
+		try {
+			return await initPromise;
+		} finally {
+			if (finderInit === initPromise) {
+				finderInit = null;
+				finderInitCwd = null;
+			}
 		}
-
-		finder = result.value;
-		finderCwd = cwd;
-		const scanResult = await finder.waitForScan(15000);
-		if (scanResult.ok && !scanResult.value) {
-			// timed out but finder is still usable with partial index
-		}
-
-		return finder;
 	}
 
 	function destroyFinder() {
+		finderInit = null;
+		finderInitCwd = null;
 		if (finder && !finder.isDestroyed) {
 			finder.destroy();
-			finder = null;
-			finderCwd = null;
 		}
+		finder = null;
+		finderCwd = null;
 	}
 
 	async function getMentionItems(query: string, quotedPrefix: boolean, signal: AbortSignal): Promise<AutocompleteItem[]> {
