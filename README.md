@@ -32,29 +32,21 @@ Requirements:
 Global install:
 
 ```bash
-pi install git:github.com/SamuelLHuber/pi-fff
+pi install git:github.com/edxeth/pi-fff
 ```
 
 Project-local install:
 
 ```bash
-pi install -l git:github.com/SamuelLHuber/pi-fff
+pi install -l git:github.com/edxeth/pi-fff
 ```
 
 This is the recommended installation method. pi will clone the repo, install dependencies, and load the extension from the `pi` manifest in `package.json`.
 
-### Pin to a release
-
-If you want a fixed version instead of tracking the default branch:
-
-```bash
-pi install git:github.com/SamuelLHuber/pi-fff@v0.2.3
-```
-
 ### Local development / manual install
 
 ```bash
-git clone https://github.com/SamuelLHuber/pi-fff.git
+git clone https://github.com/edxeth/pi-fff.git
 cd pi-fff
 bun install
 ```
